@@ -1,0 +1,384 @@
+openapi: 3.0.3
+info:
+  title: Agentic URL Shortener
+  version: 1.0.0
+  description: Local prototype. Release workflows produce readiness artifacts, not deployments.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Check service and database health
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /api/v1/links:
+    post:
+      summary: Create a short link
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema:
+            type: string
+            maxLength: 128
+          description: Optional key for safely repeating a creation request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLink'
+      responses:
+        '201':
+          description: Link created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Link'
+        '200':
+          description: Matching idempotent request replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Link'
+        '400':
+          description: Invalid URL, alias, or idempotency key
+        '409':
+          description: Alias collision or conflicting idempotency request
+        '503':
+          description: Unable to allocate a short code
+  /{code}:
+    get:
+      summary: Redirect to the original URL
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '302':
+          description: Redirect
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '404':
+          description: Link not found or disabled
+        '410':
+          description: Link expired
+  /api/v1/links/{code}/stats:
+    get:
+      summary: Read click counts for a link
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '200':
+          description: Totals and up to 30 recent daily counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkStats'
+        '404':
+          description: Link not found
+  /api/v1/links/{code}:
+    delete:
+      summary: Disable a link
+      parameters:
+        - $ref: '#/components/parameters/Code'
+      responses:
+        '204':
+          description: Disabled
+        '404':
+          description: Link not found or already disabled
+  /api/v1/workflows:
+    post:
+      summary: Start a governed engineering workflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflow'
+      responses:
+        '201':
+          description: Workflow created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '400':
+          description: Invalid scenario or requirement
+  /api/v1/workflows/{id}:
+    get:
+      summary: Read workflow status and task graph
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Current persisted workflow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+  /api/v1/workflows/{id}/advance:
+    post:
+      summary: Execute ready tasks until an approval or terminal state
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - in: query
+          name: faultOnce
+          schema:
+            type: boolean
+            default: false
+          description: Inject one test failure for the retry demonstration
+      responses:
+        '200':
+          description: Updated workflow state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+  /api/v1/workflows/{id}/approvals:
+    post:
+      summary: Approve or reject a waiting checkpoint
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gate, actor, decision]
+              properties:
+                gate:
+                  type: string
+                  example: change_approval
+                actor:
+                  type: string
+                  example: Ishee
+                decision:
+                  type: string
+                  enum: [approved, rejected]
+      responses:
+        '200':
+          description: Updated workflow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+  /api/v1/workflows/{id}/requirement:
+    put:
+      summary: Revise the requirement and invalidate stale work
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requirement]
+              properties:
+                requirement:
+                  type: string
+      responses:
+        '200':
+          description: Versioned workflow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+  /api/v1/workflows/{id}/replan:
+    post:
+      summary: Invalidate a changed task and downstream dependents
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [changedStage]
+              properties:
+                changedStage:
+                  type: string
+                  example: security
+      responses:
+        '200':
+          description: Updated workflow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+  /api/v1/workflows/{id}/stop:
+    post:
+      summary: Safe-stop an active workflow
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Stopped workflow
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+  /api/v1/workflows/{id}/diff:
+    get:
+      summary: View a proposed source change
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Reviewable unified diff
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Proposal not available
+  /api/v1/workflows/{id}/events:
+    get:
+      summary: Read hash-chained workflow events
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Event history and audit-chain verification
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  auditValid:
+                    type: boolean
+                  events:
+                    type: array
+                    items:
+                      type: object
+  /api/v1/workflows/metrics:
+    get:
+      summary: Read workflow reliability metrics
+      responses:
+        '200':
+          description: Success, retry, rollback, replan and latency metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+components:
+  parameters:
+    Code:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+    RunId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateLink:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://example.com/story
+        customAlias:
+          type: string
+          nullable: true
+          minLength: 4
+          maxLength: 32
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+    Link:
+      type: object
+      required: [code, short_url, original_url, created_at]
+      properties:
+        code:
+          type: string
+        short_url:
+          type: string
+        original_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          nullable: true
+          format: date-time
+    LinkStats:
+      type: object
+      required: [code, clicks, disabled, daily_clicks]
+      properties:
+        code:
+          type: string
+        clicks:
+          type: integer
+          format: int64
+        disabled:
+          type: boolean
+        daily_clicks:
+          type: array
+          items:
+            type: object
+            properties:
+              CLICK_DAY:
+                type: string
+                format: date
+              CLICKS:
+                type: integer
+                format: int64
+    CreateWorkflow:
+      type: object
+      required: [scenario, requirement]
+      properties:
+        scenario:
+          type: string
+          enum: [greenfield, brownfield, ambiguous]
+        requirement:
+          type: string
+        useModel:
+          type: boolean
+          default: false
+    Workflow:
+      type: object
+      required: [id, scenario, requirement, version, status, steps, approvals]
+      properties:
+        id:
+          type: string
+        scenario:
+          type: string
+        requirement:
+          type: string
+        useModel:
+          type: boolean
+        version:
+          type: integer
+        status:
+          type: string
+          enum: [pending, running, waiting_approval, completed, failed, stopped]
+        steps:
+          type: object
+          additionalProperties:
+            type: object
+        approvals:
+          type: object
+          additionalProperties:
+            type: object

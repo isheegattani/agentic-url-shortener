@@ -390,8 +390,19 @@ public class EngineeringActions {
         Path path = root.resolve("test_report.json");
         saved(path, result);
         if (exit != 0) {
-            Map<String, Object> diagnostic = Map.of("note", "Tests failed; compile diagnostic only", "testReport", path.toString());
-            saved(root.resolve("fallback.json"), diagnostic);
+            List<String> fallbackCommand = List.of("mvn", "-q", "-DskipTests", "compile");
+            Path fallbackOutput = root.resolve("fallback_compile.log");
+            ProcessBuilder fallback = new ProcessBuilder(fallbackCommand).directory(candidate.toFile())
+                    .redirectErrorStream(true).redirectOutput(fallbackOutput.toFile());
+            fallback.environment().remove("MODEL_API_KEY");
+            fallback.environment().put("DB_URL", "jdbc:h2:mem:staged;DB_CLOSE_DELAY=-1");
+            Process compile = fallback.start();
+            boolean compiled = compile.waitFor(60, TimeUnit.SECONDS);
+            if (!compiled) compile.destroyForcibly();
+            saved(root.resolve("fallback.json"), Map.of(
+                    "action", "compile_diagnostic", "command", String.join(" ", fallbackCommand),
+                    "exitCode", compiled ? compile.exitValue() : 124,
+                    "testReport", path.toString(), "releaseAllowed", false));
             throw new IllegalStateException("Candidate tests failed; see " + path);
         }
         return Map.of("file", path.toString(), "passed", true);

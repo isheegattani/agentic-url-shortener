@@ -64,7 +64,7 @@ Inspect `artifacts/RUN_ID/` for the requirement, plan, design impact, proposed d
 
 The plan inserts executable task nodes into the dependency graph. Source edits and generated tests are separate tasks; dependencies decide their execution order. The security and documentation paths are independent and synchronize at review. The graph, approval gates and allowed actions are controlled by the application rather than generated model instructions.
 
-See [scenarios](docs/SCENARIOS.md) for the commands for each demo, including retries, rollback and replanning.
+See [scenarios](docs/SCENARIOS.md) for the commands for each demo, including retries, rollback and replanning. The [API contract](docs/openapi.yaml) describes the HTTP endpoints.
 
 ## Optional model-backed engineering changes
 
@@ -76,13 +76,19 @@ export MODEL_API_KEY='YOUR_KEY'
 export MODEL_NAME='YOUR_MODEL'
 ```
 
-Create a workflow with `"useModel":true`. The model interprets requirements, generates an executable task plan, suggests impacted code and proposes an anchored Java edit plus JUnit test. Only allowlisted source files and known actions can be used. The proposal requires human approval before it is staged or tested. Credentials are not required to run the default workflows, and are never part of the staged test runner environment.
+Create a workflow with `"useModel":true`. The model interprets requirements, generates an executable task plan, suggests impacted code and proposes an anchored Java edit plus JUnit test. Only allowlisted source files and known actions can be used. The proposal requires human approval before it is staged or tested. Credentials are not required to run the default workflows, and are never part of the staged test runner environment. The full model-assisted approval flow is tested offline with scripted responses:
+
+```bash
+mvn -q -Dtest=ModelWorkflowTest test
+```
+
+That test verifies model-created tasks, the staged source edit and regression test, human approvals, release readiness and audit integrity. It does not claim that a live model provider was contacted.
 
 ## Design decisions and limitations
 
 - Spring Boot keeps the API simple; JDBC/H2 supports a local persistent demo without database infrastructure.
 - The orchestration graph is small and explicit. Task state, approval history and chained audit events are stored in H2. Changes to a requirement revoke previous approvals; changing an artifact can invalidate dependent tasks without resetting independent work.
-- A failed test run is retried once. A failed or rejected workflow removes only its staged candidate. It cannot roll back a production deployment.
+- A failed test run is retried once. If both attempts fail, a separate compilation diagnostic is recorded as a fallback, but release remains blocked. A failed or rejected workflow removes only its staged candidate. It cannot roll back a production deployment.
 - Source edits are limited to an allowlist, exact anchors and SHA-256 preconditions. Static checks are only defense in depth, not a hardened sandbox. Production execution would require container isolation, network restrictions and authenticated reviewers.
 - The release step writes a readiness manifest only. There is no automatic commit, merge, deployment or public hosting.
 - Audit hashes are tamper-evident in this local prototype, but are not an independent compliance archive. `mttr_proxy_ms` measures retry recovery, not service incident recovery.
