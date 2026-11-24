@@ -1,70 +1,64 @@
-# Three executable SDLC scenarios
+# Scenario walkthroughs
 
-Install dependencies (`python -m pip install -e '.[dev]'`) and run all commands from the project root. Replace `RUN_ID` with the id returned by `create`. Every run has a persisted graph, staged artifacts, event trail and metrics. All approvals are explicit and release means **dry-run readiness**, not deployment.
+Start the service with `mvn spring-boot:run`. Each `create` request returns a run `id`; substitute it for `RUN_ID`.
 
-## 1. Greenfield: deliver a URL shortener
-
-```bash
-python -m orchestrator.cli create --scenario greenfield \
-  --requirement 'Implement shortening, redirects, and click analytics'
-python -m orchestrator.cli advance RUN_ID --fault-once test
-python -m orchestrator.cli status RUN_ID
-# Confirm retry, review artifacts, then approve:
-python -m orchestrator.cli approve RUN_ID --gate release_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
-python -m orchestrator.cli events RUN_ID
-```
-
-The bounded offline implementation stages the tested service; real API tests exercise create, redirect, analytics, expiry, idempotency and disable. Injected transient test failure demonstrates one bounded retry, audit event and MTTR proxy. Normal exit requires release review. The optional model-assisted mode can propose **additional new code** but cannot apply it without human change approval.
-
-## 2. Brownfield: reserve an existing alias
+## Greenfield
 
 ```bash
-python -m orchestrator.cli create --scenario brownfield \
-  --requirement 'Reserve the support alias in the existing service'
-python -m orchestrator.cli advance RUN_ID
-# Inspect artifacts/RUN_ID/proposed_change.diff first.
-python -m orchestrator.cli approve RUN_ID --gate change_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
-# Inspect test_report.json, security.json, engineering_summary.md and review.json.
-python -m orchestrator.cli approve RUN_ID --gate release_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
+curl -s -X POST localhost:8080/api/v1/workflows -H 'Content-Type: application/json' \
+  -d '{"scenario":"greenfield","requirement":"Build URL shortening, redirects and click analytics"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance?faultOnce=true
+curl -s localhost:8080/api/v1/workflows/RUN_ID/events
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/approvals -H 'Content-Type: application/json' \
+  -d '{"gate":"release_approval","actor":"Ishee","decision":"approved"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
 ```
 
-Reasoning identifies `url_shortener/validation.py` (policy), `url_shortener/app.py` (request mapping) and existing API tests. The proposal replaces one exact source anchor in the **staged candidate** and adds a regression test. A named reviewer sees the unified diff before execution. The source checkout remains unchanged; final readiness includes traceable validation evidence.
+The baseline service is staged, contract tests run, a single injected transient failure is retried and release approval is required. Read `artifacts/RUN_ID/release_manifest.json`.
 
-## 3. Ambiguous: make analytics private
+## Brownfield
 
 ```bash
-python -m orchestrator.cli create --scenario ambiguous \
-  --requirement 'Make analytics more private and efficient'
-python -m orchestrator.cli advance RUN_ID
-# Planning is blocked: no automatic interpretation of an unresolved privacy policy.
-python -m orchestrator.cli revise RUN_ID \
-  --requirement 'Keep aggregate click counts; never store IP addresses or user agents'
-python -m orchestrator.cli advance RUN_ID
-python -m orchestrator.cli approve RUN_ID --gate requirements_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
-python -m orchestrator.cli approve RUN_ID --gate release_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
+curl -s -X POST localhost:8080/api/v1/workflows -H 'Content-Type: application/json' \
+  -d '{"scenario":"brownfield","requirement":"Reserve the support alias"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s localhost:8080/api/v1/workflows/RUN_ID/diff
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/approvals -H 'Content-Type: application/json' \
+  -d '{"gate":"change_approval","actor":"Ishee","decision":"approved"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/approvals -H 'Content-Type: application/json' \
+  -d '{"gate":"release_approval","actor":"Ishee","decision":"approved"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
 ```
 
-The requirement version changes; all approvals are revoked and a new plan is required. A new executable privacy contract inspects the click schema to verify the promised behavior. This is an honest scoped interpretation: actual analytics high-volume optimization is outside the prototype.
+The plan creates actual `SOURCE_PATCH` and `ADD_REGRESSION_TEST` nodes. Both wait for staging, which waits for change approval. `security` joins all plan tasks; `docs` is independent of `security` and `test`, and `review` joins their results. The source checkout stays unchanged.
 
-## Nonlinear execution, change detection and negative evidence
+## Ambiguous requirement
 
 ```bash
-# On an in-progress run, invalidate only the security stage and dependent work.
-python -m orchestrator.cli replan RUN_ID --changed-stage security
-python -m orchestrator.cli advance RUN_ID
-# Its independent docs stage stays complete; release approval must be collected again.
-
-# Reject a waiting gate to safe-stop and remove the staged candidate.
-python -m orchestrator.cli approve RUN_ID --gate release_approval \
-  --actor Ishee --decision rejected
-
-python -m orchestrator.cli metrics
-python -m orchestrator.cli events RUN_ID
+curl -s -X POST localhost:8080/api/v1/workflows -H 'Content-Type: application/json' \
+  -d '{"scenario":"ambiguous","requirement":"Make analytics private and efficient"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s -X PUT localhost:8080/api/v1/workflows/RUN_ID/requirement -H 'Content-Type: application/json' \
+  -d '{"requirement":"Keep daily click counts without storing IP addresses or user-agent information"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/approvals -H 'Content-Type: application/json' \
+  -d '{"gate":"requirements_approval","actor":"Ishee","decision":"approved"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
 ```
 
-External changes to already-produced artifact files are detected by fingerprint on the next `advance` and automatically invalidate dependent tasks and approvals. Tests include a fake model that proposes actual source edits and tests; it verifies pre-execution change approval and that the original checkout never changes. A real model can be configured using the README's `MODEL_*` environment variables, but no credentials are needed to exercise every governance contract in CI.
+The workflow pauses before planning, revokes old approvals after revision, creates an executable schema privacy test and waits for release approval after validation. Approve `release_approval`, then advance again to finish.
+
+## Failure handling and observability
+
+```bash
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/replan \
+  -H 'Content-Type: application/json' -d '{"changedStage":"security"}'
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s -X POST localhost:8080/api/v1/workflows/RUN_ID/approvals \
+  -H 'Content-Type: application/json' -d '{"gate":"release_approval","actor":"Ishee","decision":"rejected"}'
+curl -s localhost:8080/api/v1/workflows/metrics
+curl -s localhost:8080/api/v1/workflows/RUN_ID/events
+```
+
+A selective replan invalidates the changed task and descendants, preserving independent documentation. Rejection stops the run and deletes staged code. Audit hashes are checked when events are requested.

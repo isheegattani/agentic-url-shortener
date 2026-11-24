@@ -1,18 +1,15 @@
-name: CI
+name: Java CI
 on:
   push:
   pull_request:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.12', '3.14']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-java@v4
         with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e '.[dev]'
-      - run: python -m pytest -q
-      - run: python -m compileall -q url_shortener orchestrator
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - run: mvn -B -q test

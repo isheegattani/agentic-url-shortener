@@ -1,111 +1,90 @@
 # Agentic URL Shortener
 
-**Ishee Gattani**
+Ishee Gattani
 
-This project has two parts: a URL shortener API and a workflow engine that takes a software requirement through planning, code changes, tests, review, and release readiness. I kept them separate so the API can run on its own and the workflow can be tested independently.
+A Java 21 / Spring Boot prototype with two parts: a URL shortener API and an engineering workflow that takes requirements through planning, reviewed changes, tests and release readiness.
 
-## Run the project
+## Run
 
-Python 3.10+ is required.
+Requires Java 21 and Maven 3.9+.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-python -m pytest -q
-python -m uvicorn url_shortener.app:app --reload
+mvn test
+mvn spring-boot:run
 ```
 
-Open http://localhost:8000/docs to try the API. The project uses a local SQLite database, so there is no separate database setup.
+The service runs at `http://localhost:8080`. It uses a file-backed H2 database. No database server or AI API key is required for the three local scenarios.
 
-## URL shortener
-
-The service supports creating a short link, choosing a custom alias, redirecting to the original URL, checking click counts, and disabling a link. Links can have expiration dates. It also handles duplicate aliases, repeated requests with an idempotency key, and invalid destinations.
-
-Try the API:
+## Short-link API
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/links \
+curl -X POST http://localhost:8080/api/v1/links -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/story","customAlias":"mydemo"}'
+curl -i http://localhost:8080/mydemo
+curl http://localhost:8080/api/v1/links/mydemo/stats
+curl -X DELETE -i http://localhost:8080/api/v1/links/mydemo
+```
+
+Links support custom aliases, expiry, duplicate protection, idempotency keys, redirects, click counts and disable. Analytics is best effort so a click-recording problem does not stop a valid redirect.
+
+## Engineering workflows
+
+Create a scenario:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/workflows \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.org/articles","custom_alias":"article1"}'
-curl -i http://localhost:8000/article1
-curl http://localhost:8000/api/v1/links/article1/stats
-curl -X DELETE -i http://localhost:8000/api/v1/links/article1
+  -d '{"scenario":"brownfield","requirement":"Reserve the support alias"}'
 ```
 
-## Engineering workflow
-
-The workflow is a dependency graph, not a fixed sequence of commands. Each step records its result, and a step starts only when its dependencies are complete.
-
-1. Understand the requirement and record assumptions.
-2. Break the work into tasks and identify affected code.
-3. Prepare a code-change proposal and a diff.
-4. Get human approval before applying a proposed change.
-5. Apply approved changes in a separate candidate directory, then run security checks and tests.
-6. Collect test results and documentation for review.
-7. Require final approval before writing a release-readiness report.
-
-Independent work can run in parallel; the review step waits for its required results. Failed tests have a bounded retry. Rejected changes stop the workflow and remove the staged candidate. Changes to requirements or saved outputs invalidate the appropriate work and approvals. Nothing is merged or deployed automatically.
-
-### Run a brownfield example
+Copy the returned `id` and replace `RUN_ID` below.
 
 ```bash
-python -m orchestrator.cli create --scenario brownfield \
-  --requirement 'Reserve the support custom alias'
+curl -s -X POST http://localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s http://localhost:8080/api/v1/workflows/RUN_ID/diff
+curl -s -X POST http://localhost:8080/api/v1/workflows/RUN_ID/approvals \
+  -H 'Content-Type: application/json' \
+  -d '{"gate":"change_approval","actor":"Ishee","decision":"approved"}'
+curl -s -X POST http://localhost:8080/api/v1/workflows/RUN_ID/advance
+curl -s -X POST http://localhost:8080/api/v1/workflows/RUN_ID/approvals \
+  -H 'Content-Type: application/json' \
+  -d '{"gate":"release_approval","actor":"Ishee","decision":"approved"}'
+curl -s -X POST http://localhost:8080/api/v1/workflows/RUN_ID/advance
 ```
 
-Copy the run ID from the output and replace `RUN_ID` below:
-
-```bash
-python -m orchestrator.cli advance RUN_ID
-python -m orchestrator.cli status RUN_ID
-```
-
-Review `artifacts/RUN_ID/proposed_change.diff`, then continue:
-
-```bash
-python -m orchestrator.cli approve RUN_ID --gate change_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
-python -m orchestrator.cli approve RUN_ID --gate release_approval --actor Ishee
-python -m orchestrator.cli advance RUN_ID
-python -m orchestrator.cli events RUN_ID
-python -m orchestrator.cli metrics
-```
-
-Run state and audit events are stored in `runs/workflows.sqlite`. Reports and the staged candidate are saved under `artifacts/RUN_ID/`. These local files are excluded from Git.
+Inspect `artifacts/RUN_ID/` for the requirement, plan, design impact, proposed diff, test report, engineering summary, audit evidence and dry-run release manifest. The working source is never automatically merged or deployed.
 
 ## Three scenarios
 
-| Scenario | What it demonstrates |
+| Scenario | What the workflow demonstrates |
 |---|---|
-| Greenfield | Stage and test the URL shortener, then request release approval |
-| Brownfield | Inspect the existing code, propose an alias-validation change, review the diff, and run regression tests |
-| Ambiguous requirement | Pause for clarification, update the requirement, invalidate old approvals, and check the analytics privacy contract |
+| Greenfield | Stages and validates the existing service, then requires release approval |
+| Brownfield | Plans and executes an alias validation change with regression test, review and separate approval gates |
+| Ambiguous | Stops for requirements approval, accepts revised requirements and validates click-data privacy |
 
-The commands for each scenario, including retry, rollback, and re-planning demos, are in [docs/SCENARIOS.md](docs/SCENARIOS.md).
+The plan inserts executable task nodes into the dependency graph. Source edits and generated tests are separate tasks; dependencies decide their execution order. The security and documentation paths are independent and synchronize at review. The graph, approval gates and allowed actions are controlled by the application rather than generated model instructions.
 
-## Optional model-backed changes
+See [scenarios](docs/SCENARIOS.md) for the commands for each demo, including retries, rollback and replanning.
 
-The three local scenarios run without a model account. With `--llm`, the workflow can ask a configured model to interpret requirements, suggest tasks, identify impacted files, and propose source edits with a regression test. The proposal must pass file, syntax, and safety checks and receive human approval before it is applied to the staged candidate.
+## Optional model-backed engineering changes
 
-To use this path, configure a compatible HTTPS chat-completions endpoint:
+Set the environment variables below to use a compatible chat-completions API:
 
 ```bash
 export MODEL_API_URL='https://YOUR_ENDPOINT/v1/chat/completions'
-export MODEL_API_KEY='YOUR_SECRET_KEY'
-export MODEL_NAME='YOUR_MODEL_ID'
-python -m orchestrator.cli create --scenario greenfield \
-  --requirement 'Reserve the help alias and add a test' --llm
+export MODEL_API_KEY='YOUR_KEY'
+export MODEL_NAME='YOUR_MODEL'
 ```
 
-Do not commit credentials. Automated tests use a fake model response to verify this path without network access. A live model call is optional and isn't part of the default test run.
+Create a workflow with `"useModel":true`. The model interprets requirements, generates an executable task plan, suggests impacted code and proposes an anchored Java edit plus JUnit test. Only allowlisted source files and known actions can be used. The proposal requires human approval before it is staged or tested. Credentials are not required to run the default workflows, and are never part of the staged test runner environment.
 
-## Design decisions and limits
+## Design decisions and limitations
 
-- **SQLite** keeps the demo easy to run. A larger service would need distributed storage and asynchronous click processing.
-- **Redirects take priority over analytics.** A failed click-recording write does not prevent a valid redirect.
-- **Source changes stay staged.** Approval creates a dry-run release report, not a merge or deployment.
-- **Safety checks have limits.** File allowlists, review, and static checks reduce risk, but the candidate test runner is not a hardened sandbox.
-- **This is a local prototype.** Authentication, rate limiting, link-abuse protection, authenticated reviewers, and production monitoring would be needed for a public service.
+- Spring Boot keeps the API simple; JDBC/H2 supports a local persistent demo without database infrastructure.
+- The orchestration graph is small and explicit. Task state, approval history and chained audit events are stored in H2. Changes to a requirement revoke previous approvals; changing an artifact can invalidate dependent tasks without resetting independent work.
+- A failed test run is retried once. A failed or rejected workflow removes only its staged candidate. It cannot roll back a production deployment.
+- Source edits are limited to an allowlist, exact anchors and SHA-256 preconditions. Static checks are only defense in depth, not a hardened sandbox. Production execution would require container isolation, network restrictions and authenticated reviewers.
+- The release step writes a readiness manifest only. There is no automatic commit, merge, deployment or public hosting.
+- Audit hashes are tamper-evident in this local prototype, but are not an independent compliance archive. `mttr_proxy_ms` measures retry recovery, not service incident recovery.
 
-See [Architecture](docs/ARCHITECTURE.md), [Design decisions](docs/DECISIONS.md), and [Engineering walkthrough](docs/INTERVIEW_GUIDE.md) for the reasoning and validation steps.
+[Architecture and trade-offs](docs/ARCHITECTURE.md)

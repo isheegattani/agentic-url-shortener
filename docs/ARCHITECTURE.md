@@ -1,69 +1,58 @@
-# Architecture and governance
+# Architecture and design decisions
 
-## Service data flow
+## URL shortening
 
 ```mermaid
 flowchart LR
-  Client[HTTP client] --> API[FastAPI]
-  API --> Validate[Input validation]
-  Validate --> DB[(SQLite links)]
-  API --> Redirect[302 redirect]
-  Redirect --> Analytics[(Daily click records)]
+  Client --> Controller[Spring MVC API]
+  Controller --> Policy[URL and alias validation]
+  Policy --> Store[(H2 / JDBC)]
+  Controller --> Redirect[302 redirect]
+  Redirect --> Clicks[Best-effort click tracking]
 ```
 
-Create: validate URL/alias, generate secure random code, perform atomic insert with unique index, honor idempotency key. Redirect: look up link, check expiry/disabled, record best-effort analytics, redirect. Stats: aggregate recent click counts. Disable: soft-delete. Production growth path: PostgreSQL links + Redis cache + asynchronous event queue; authenticated API, anti-abuse policy and rate limiting.
+Create links in a database transaction with unique alias and idempotency constraints. Random codes use `SecureRandom`. Redirect reads the active link, rejects expired or disabled links, records a click and responds with HTTP 302. An analytics failure does not block the redirect.
 
-## Mandatory orchestration graph
+For larger traffic, use an external relational database, a cache for hot short codes and a durable queue for click events. Authentication, rate limiting, abuse screening and operational monitoring are necessary before public deployment.
+
+## Engineering workflow
 
 ```mermaid
 flowchart TD
-  Intake[Normalize requirement] --> Amb{Ambiguous?}
-  Amb -->|yes| Req[Requirements approval]
-  Amb -->|no| Plan[Plan / task decomposition]
-  Req --> Plan
-  Plan --> Design[Impact / architecture]
-  Design --> Proposal[Bounded change proposal + diff]
-  Proposal --> Gate{Brownfield or model change?}
-  Gate -->|yes| Change[Human change approval]
-  Gate -->|no| Impl[Staged implementation]
-  Change --> Impl
-  Impl --> Security[Static/security policy]
-  Impl --> Docs[Change notes / engineering summary]
-  Security --> Tests[Real unit / integration tests]
-  Tests --> Review[Join / review]
+  Intake --> RequirementGate{Ambiguous?}
+  RequirementGate -->|yes| Clarify[Human requirements approval]
+  RequirementGate -->|no| Plan
+  Clarify --> Plan
+  Plan[Task decomposition] --> Design[Code impact]
+  Design --> Proposal[Reviewable diff]
+  Proposal --> ChangeGate{Proposed code change?}
+  ChangeGate -->|yes| Approval[Human change approval]
+  ChangeGate -->|no| Stage
+  Approval --> Stage[Isolated candidate]
+  Stage --> Tasks[Planned executable tasks]
+  Tasks --> Security[Static guardrails]
+  Tasks --> Docs[Engineering summary]
+  Security --> Tests[Maven contract and regression tests]
+  Tests --> Review[Evidence join]
   Docs --> Review
   Review --> ReleaseGate[Human release approval]
-  ReleaseGate --> Manifest[Dry-run release manifest]
+  ReleaseGate --> Ready[Dry-run release manifest]
 ```
 
-The **graph and approval gates are owned by the deterministic policy engine**, not by the model. Each task has explicit entry dependencies, terminal outcome and persisted execution record. Independent ready tasks execute in worker batches; review joins test/security/documentation evidence. The test stage waits for the security scan of the actual candidate before executing candidate code. Review and release cannot run while any prerequisite is pending or failed.
+The planner produces executable action nodes. Every task names a known action and may depend on earlier planned tasks. The engine inserts these nodes into the DAG and makes `security` and `docs` wait for their completion. Model-generated tasks cannot add approval bypasses or new executable action types.
 
-## Agent responsibilities and authority
+The graph is persisted to H2 after execution batches. `advance` resumes from completed tasks and stops at a blocked human gate. Documentation and security can run concurrently. Review starts only when documentation, security and tests have completed successfully.
 
-| Agent | Inputs | Output | Authority |
-|---|---|---|---|
-| Intake | requirement, scenario | normalized specification, assumptions/ambiguities | interpret only |
-| Plan | approved intake | plan and dependency narrative | propose subtasks, not change control graph |
-| Design | plan + source inventory | module/API impact and trade-offs | inspect only |
-| Proposal | requirement + allowlisted source | exact edits, tests, human-readable unified diff | propose, never apply |
-| Implementation | approved proposal | isolated staged candidate + manifest | write candidate only |
-| Security | staged source | AST policy/risks report | block unsafe candidate |
-| Test | checked candidate | actual pytest result, diagnostic on failure | fixed test command only |
-| Docs | staged change | change notes and final summary | write artifacts only |
-| Review / release | all evidence + human approvals | review and dry-run manifest | never merge or deploy |
+## Governance and recovery
 
-`--llm` enables a model to interpret, decompose, suggest impacted modules and generate concrete anchored edits and a regression test. A provider-neutral HTTPS JSON interface is used; deterministic validation enforces schemas, paths, anchors, Python AST rules, bounded response size and reviewed changes. Bounded offline scenario runners remain useful when no model endpoint is configured. The automated tests stub model responses to prove that actual model-proposed edits cannot execute before approval.
+A proposed source patch must match an allowlisted file and unique substring. The original file SHA-256 is recorded so the staged patch fails if its source changes before approval. Generated source and tests undergo restricted-string checks; this is not a complete Java security sandbox. A reviewer must approve proposed code changes before they are applied or executed.
 
-## Versioning, re-planning and recovery
+Test execution uses a fixed Maven command, rather than a command supplied by a model. It has a bounded retry. Failures do not advance to release. Candidate-only rollback removes staged code after rejection, failure or safe-stop. Requirement revisions restart the graph and revoke approvals. Artifact fingerprint changes and targeted replanning invalidate dependent tasks while preserving independent work.
 
-`revise RUN_ID --requirement ...` increments the requirement version, revokes all approvals, rolls back the staged candidate and rebuilds the full DAG. `replan RUN_ID --changed-stage security` invalidates only that stage and its graph descendants, preserving independent completed outputs (e.g. documentation). At `advance`, completed output artifacts are fingerprinted; unexpected changes automatically invalidate the affected task and downstream approvals. This preserves freshness and decision lineage. Completed/failed/stopped runs are immutable terminal histories and require a new run.
+Runs and audit events are stored in H2. Events use a chained SHA-256 digest for local tamper evidence. The metrics endpoint reports success rate, retries, rollbacks, replans, elapsed workflow duration and retry-recovery-time proxy. These are useful prototype metrics, not a replacement for a compliance-grade audit sink or incident MTTR monitoring.
 
-Each agent stage is audited with duration, attempts, requirement version, and outcome. Failed test execution is retried once with bounded backoff; syntax compilation is an **informational diagnostic**, never an alternative passing gate. Failed or rejected work safe-stops and removes the isolated candidate. The source checkout remains unchanged. RunStore persists JSON state and SHA-256 chained events; it is a local demonstration of tamper evidence, not a signed append-only compliance system. Metrics: terminal success ratio, retry/rollback/replan counts, retry-recovery-time proxy, and end-to-end latency.
+## Boundaries
 
-## Security and reliability boundaries
+The model client is optional and provider-neutral. Offline scenarios are deterministic for reproducibility; live mode can interpret requirements, generate executable task decompositions, identify affected files and propose changes with regression tests. The engine remains the authority for dependencies, allowed actions and approval gates.
 
-Pre-execution human review is mandatory for model-generated and brownfield patches; all releases require another human approval. Proposals cannot change orchestrator/CI policy files, cannot write arbitrary paths, cannot silently overwrite source, and cannot supply test shell commands. Tests run in a reduced-environment subprocess and cannot access model API credentials by normal environment inheritance. However **Python AST controls are incomplete security boundaries**: do not run arbitrary untrusted code without container isolation, restricted filesystem, network controls and separate credentials in production. Human actors currently are provided CLI names; use authenticated identity/roles and an independent audit sink in production.
-
-## Core trade-offs
-
-The local implementation deliberately favors reproducibility and reviewability over distributed scale. SQLite is suitable for demo durability, not multi-region redirect/analytics. Candidate-only rollback is safe but cannot revert a real deployment. Replanning is conservative for changed requirements and selective for independently changed upstream artifacts. The model can propose changes but cannot expand its own permissions. See `docs/DECISIONS.md` for the quality gates and rationale.
+Source code is staged under `artifacts/<run-id>/candidate` and never automatically committed, merged or deployed. The current proof of concept does not isolate arbitrary generated code with containers, authenticate approval actors or handle distributed workers. Those would be separate production steps.
