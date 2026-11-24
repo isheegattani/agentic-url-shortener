@@ -96,7 +96,7 @@ public class LinkService {
     public Map<String, Object> stats(String code) {
         Map<String, Object> link = get(code);
         List<Map<String, Object>> days = jdbc.queryForList(
-                "SELECT CAST(clicked_at AS DATE) AS day, COUNT(*) AS clicks FROM clicks WHERE code=? GROUP BY CAST(clicked_at AS DATE) ORDER BY day DESC LIMIT 30", code);
+                "SELECT CAST(clicked_at AS DATE) AS click_day, COUNT(*) AS clicks FROM clicks WHERE code=? GROUP BY CAST(clicked_at AS DATE) ORDER BY CAST(clicked_at AS DATE) DESC LIMIT 30", code);
         return Map.of("code", code, "clicks", link.get("CLICKS"), "disabled", link.get("DISABLED"), "daily_clicks", days);
     }
 
